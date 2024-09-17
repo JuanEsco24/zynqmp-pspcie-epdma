@@ -178,9 +178,14 @@ exp_dma_write (struct file *file,
     const char *buffer_ptr = buffer;  // Keep track of the write location
     ssize_t total_read = 0;
 	chan =   file->private_data;
-
+	volatile long chunk=length/4;//Number of samples
+    while(chunk>0x400000)
+    {
+        chunk/=2;
+    }
+	chunk*=4;//convert back to bytes
 	if(chan->direction_flag == 0) {
-		chan->direction = DMA_FROM_DEVICE;
+		chan->direction = DMA_TO_DEVICE;
 		chan->direction_flag ++;
 	}
 
@@ -209,15 +214,15 @@ exp_dma_write (struct file *file,
 		}
 
 		// Perform the transfer with the current buffer (ping or pong)
-		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, *f_offset, &dma_offset, DMA_TO_DEVICE);
-		if (ret != *f_offset) {
+		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, chunk, &dma_offset, DMA_TO_DEVICE);
+		if (ret != chunk) {
 			dev_dbg(chan->dev, "Initiate synchronous transfer unsuccessful\n");
 			break;
 		}
 
 		// Update remaining bytes and switch buffers
-		remaining -= *f_offset;
-		buffer_ptr += *f_offset;  // Move buffer pointer forward
+		remaining -= chunk;
+		buffer_ptr += chunk;  // Move buffer pointer forward
 		ping = !ping;  // Switch between ping and pong buffers
 		total_read += ret;
 	}
