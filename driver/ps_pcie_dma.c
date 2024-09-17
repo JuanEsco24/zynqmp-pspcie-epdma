@@ -19,8 +19,10 @@
 
 #include "ps_pcie_dma.h"
 #define MIN_TRANSFER_SIZE 64  // Minimum size for DMA transfer
-#define PING_BUFFER_ADDR  0x78000000
-#define PONG_BUFFER_ADDR  0x7a000000
+#define TX_PING_BUFFER_ADDR  0x74000000
+#define TX_PONG_BUFFER_ADDR  0x76000000
+#define RX_PING_BUFFER_ADDR  0x78000000
+#define RX_PONG_BUFFER_ADDR  0x7a000000
 #define DRV_MODULE_NAME		"ps_pcie_dma"
 #define EXP_DMA_MAJ_NUM			1
 #define EXP_DMA_MIN_NUM			0
@@ -115,11 +117,11 @@ exp_dma_read (struct file *file,
 		if (ping) {
 			//reinit_completion(&chan->ping_completion);
 			chan->ping_completion=false;
-			dma_offset = PING_BUFFER_ADDR;
+			dma_offset = RX_PING_BUFFER_ADDR;
 		} else {
 			//reinit_completion(&chan->pong_completion);
 			chan->pong_completion=false;
-			dma_offset = PONG_BUFFER_ADDR;
+			dma_offset = RX_PONG_BUFFER_ADDR;
 		}
 
 		// Wait for ISR to signal that the buffer is ready
@@ -166,7 +168,7 @@ exp_dma_read (struct file *file,
 static ssize_t
 exp_dma_write (struct file *file,
 		const char __user * buffer, size_t length, loff_t * f_offset) {
-
+/*
 	expresso_dma_chan_t *chan;
 	ssize_t ret;
 
@@ -184,6 +186,79 @@ exp_dma_write (struct file *file,
 	}
 
 	return ret;
+	*/
+	expresso_dma_chan_t *chan;
+	unsigned int divider = 2;
+	ssize_t ret;
+    size_t remaining = length;
+    volatile size_t transfer_size;
+    loff_t dma_offset; 
+    bool ping = true;
+    const char *buffer_ptr = buffer;  // Keep track of the write location
+    ssize_t total_read = 0;
+	chan =   file->private_data;
+
+	if(chan->direction_flag == 0) {
+		chan->direction = DMA_FROM_DEVICE;
+		chan->direction_flag ++;
+	}
+
+	transfer_size=length/divider;
+	while(transfer_size>MAX_TRANSFER_LENGTH)
+	{
+		divider*=2;
+		transfer_size=length/divider;
+	}
+
+	// Transfer size larger than 4MB, use ping-pong buffering
+	while (remaining > 0) {
+		// Set the corresponding int flag to false (ping or pong)
+		if (ping) {
+			//reinit_completion(&chan->ping_completion);
+			chan->ping_completion=false;
+			dma_offset = TX_PING_BUFFER_ADDR;
+		} else {
+			//reinit_completion(&chan->pong_completion);
+			chan->pong_completion=false;
+			dma_offset = TX_PONG_BUFFER_ADDR;
+		}
+
+		// Wait for ISR to signal that the buffer is ready
+		if (ping) {
+			// Wait for completion
+			while(!chan->ping_completion){cpu_relax();}
+			//wait_for_completion_interruptible(&chan->ping_completion);
+		} else {
+			// Wait for completion
+			while(!chan->pong_completion){cpu_relax();}
+			//wait_for_completion_interruptible(&chan->pong_completion);
+		}
+
+		// Perform the transfer with the current buffer (ping or pong)
+		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, transfer_size, &dma_offset, DMA_TO_DEVICE);
+		if (ret != transfer_size) {
+			dev_dbg(chan->dev, "Initiate synchronous transfer unsuccessful\n");
+			break;
+		}
+
+		// If the remaining size is less than 64 bytes, we ensure only the relevant bytes are written to the buffer
+		if (remaining < MIN_TRANSFER_SIZE) {
+			// Ensure we only copy the actual remaining bytes to the buffer
+			if (copy_to_user(buffer_ptr, buffer_ptr, remaining)) {
+				dev_err(chan->dev, "Error! copy_to_user failed on the last small transfer\n");
+				ret = -EFAULT;
+				break;
+			}
+		}
+
+		// Update remaining bytes and switch buffers
+		remaining -= transfer_size;
+		buffer_ptr += transfer_size;  // Move buffer pointer forward
+		ping = !ping;  // Switch between ping and pong buffers
+		total_read += ret;
+	}
+
+    return total_read;
 }
 
 /**
