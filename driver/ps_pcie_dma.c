@@ -168,30 +168,11 @@ exp_dma_read (struct file *file,
 static ssize_t
 exp_dma_write (struct file *file,
 		const char __user * buffer, size_t length, loff_t * f_offset) {
-/*
+
 	expresso_dma_chan_t *chan;
-	ssize_t ret;
-
-	chan =   file->private_data;
-
-	if(chan->direction_flag == 0) {
-		chan->direction = DMA_TO_DEVICE;
-		chan->direction_flag ++;
-	}
-
-	ret = exp_dma_initiate_synchronous_transfer(chan,buffer,length,f_offset,DMA_TO_DEVICE);
-
-	if(ret != length){
-		dev_dbg(chan->dev, "Initiate synchronous transfer unsuccessful\n");
-	}
-
-	return ret;
-	*/
-	expresso_dma_chan_t *chan;
-	unsigned int divider = 2;
 	ssize_t ret;
     size_t remaining = length;
-    volatile size_t transfer_size;
+    //volatile size_t transfer_size;
     loff_t dma_offset; 
     bool ping = true;
     const char *buffer_ptr = buffer;  // Keep track of the write location
@@ -201,13 +182,6 @@ exp_dma_write (struct file *file,
 	if(chan->direction_flag == 0) {
 		chan->direction = DMA_FROM_DEVICE;
 		chan->direction_flag ++;
-	}
-
-	transfer_size=length/divider;
-	while(transfer_size>MAX_TRANSFER_LENGTH)
-	{
-		divider*=2;
-		transfer_size=length/divider;
 	}
 
 	// Transfer size larger than 4MB, use ping-pong buffering
@@ -235,25 +209,15 @@ exp_dma_write (struct file *file,
 		}
 
 		// Perform the transfer with the current buffer (ping or pong)
-		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, transfer_size, &dma_offset, DMA_TO_DEVICE);
-		if (ret != transfer_size) {
+		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, *f_offset, &dma_offset, DMA_TO_DEVICE);
+		if (ret != *f_offset) {
 			dev_dbg(chan->dev, "Initiate synchronous transfer unsuccessful\n");
 			break;
 		}
 
-		// If the remaining size is less than 64 bytes, we ensure only the relevant bytes are written to the buffer
-		if (remaining < MIN_TRANSFER_SIZE) {
-			// Ensure we only copy the actual remaining bytes to the buffer
-			if (copy_to_user(buffer_ptr, buffer_ptr, remaining)) {
-				dev_err(chan->dev, "Error! copy_to_user failed on the last small transfer\n");
-				ret = -EFAULT;
-				break;
-			}
-		}
-
 		// Update remaining bytes and switch buffers
-		remaining -= transfer_size;
-		buffer_ptr += transfer_size;  // Move buffer pointer forward
+		remaining -= *f_offset;
+		buffer_ptr += *f_offset;  // Move buffer pointer forward
 		ping = !ping;  // Switch between ping and pong buffers
 		total_read += ret;
 	}
