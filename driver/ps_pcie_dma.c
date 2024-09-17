@@ -89,7 +89,7 @@ exp_dma_read (struct file *file,
 	ssize_t ret;
     size_t remaining = length;
     size_t transfer_size;
-    loff_t* dma_offset; 
+    loff_t dma_offset; 
     bool ping = true;
     char *buffer_ptr = buffer;  // Keep track of the write location
     ssize_t total_read = 0;
@@ -134,7 +134,7 @@ exp_dma_read (struct file *file,
 		}
 
 		// Perform the transfer with the current buffer (ping or pong)
-		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, transfer_size, f_offset, DMA_FROM_DEVICE);
+		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, transfer_size, &dma_offset, DMA_FROM_DEVICE);
 		if (ret != transfer_size) {
 			dev_dbg(chan->dev, "Initiate synchronous transfer unsuccessful\n");
 			break;
@@ -1044,7 +1044,7 @@ static int expDmaCheckInterruptStatus(expresso_dma_chan_t *chan) {
 	if (status & DMA_INTSTATUS_SWINTR_BIT) {
 		// Read the SCRATCH0 register
         scratch0_value = chan->pDMAEngRegs->SCRATHC0;
-		printk(KERN_INFO"Received SW interrupt with SC0:%u\n\r",scratch0_value);
+		//printk(KERN_INFO"Received SW interrupt with SC0:%u\n\r",scratch0_value);
         // Check if SCRATCH0 is even or odd
         if (scratch0_value % 2 == 0) {
             //complete(&chan->ping_completion);
