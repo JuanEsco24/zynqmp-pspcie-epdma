@@ -123,7 +123,7 @@ int main(int argc, char *argv[])
 			close(datafd);
 			exit(-1);
 		}
-		memset((unsigned char *)txbuffer, 'Z', packet_len);
+		memset((unsigned char *)txbuffer, 'Y', packet_len);
 		gettimeofday(&before,NULL);
 		ret = pwrite (datafd, txbuffer, packet_len, offset);
 		gettimeofday(&after,NULL);

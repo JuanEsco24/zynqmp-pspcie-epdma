@@ -18,7 +18,9 @@
  */
 
 #include "ps_pcie_dma.h"
-
+#define MIN_TRANSFER_SIZE 64  // Minimum size for DMA transfer
+#define PING_BUFFER_ADDR  0x78000000
+#define PONG_BUFFER_ADDR  0x7a000000
 #define DRV_MODULE_NAME		"ps_pcie_dma"
 #define EXP_DMA_MAJ_NUM			1
 #define EXP_DMA_MIN_NUM			0
@@ -85,7 +87,12 @@ exp_dma_read (struct file *file,
 
 	expresso_dma_chan_t *chan;
 	ssize_t ret;
-
+    size_t remaining = length;
+    size_t transfer_size;
+    loff_t* dma_offset; 
+    bool ping = true;
+    char *buffer_ptr = buffer;  // Keep track of the write location
+    ssize_t total_read = 0;
 	chan =   file->private_data;
 
 	if(chan->direction_flag == 0) {
@@ -93,13 +100,64 @@ exp_dma_read (struct file *file,
 		chan->direction_flag ++;
 	}
 
-	ret = exp_dma_initiate_synchronous_transfer(chan,buffer,length,f_offset,DMA_FROM_DEVICE);
+	// Transfer size larger than 4MB, use ping-pong buffering
+	while (remaining > 0) {
+		// Determine the transfer size: max 4MB, but for the last part, ensure a minimum size of 64 bytes
+		if (remaining > MAX_TRANSFER_LENGTH) {
+			transfer_size = MAX_TRANSFER_LENGTH;
+		} else if (remaining < MIN_TRANSFER_SIZE) {
+			transfer_size = MIN_TRANSFER_SIZE;
+		} else {
+			transfer_size = remaining;
+		}
 
-	if(ret != length){
-		dev_dbg(chan->dev, "Initiate synchronous transfer unsuccessful\n");
+		// Set the corresponding int flag to false (ping or pong)
+		if (ping) {
+			//reinit_completion(&chan->ping_completion);
+			chan->ping_completion=false;
+			dma_offset = PING_BUFFER_ADDR;
+		} else {
+			//reinit_completion(&chan->pong_completion);
+			chan->pong_completion=false;
+			dma_offset = PONG_BUFFER_ADDR;
+		}
+
+		// Wait for ISR to signal that the buffer is ready
+		if (ping) {
+			// Wait for completion
+			while(!chan->ping_completion){cpu_relax();}
+			//wait_for_completion_interruptible(&chan->ping_completion);
+		} else {
+			// Wait for completion
+			while(!chan->pong_completion){cpu_relax();}
+			//wait_for_completion_interruptible(&chan->pong_completion);
+		}
+
+		// Perform the transfer with the current buffer (ping or pong)
+		ret = exp_dma_initiate_synchronous_transfer(chan, buffer_ptr, transfer_size, f_offset, DMA_FROM_DEVICE);
+		if (ret != transfer_size) {
+			dev_dbg(chan->dev, "Initiate synchronous transfer unsuccessful\n");
+			break;
+		}
+
+		// If the remaining size is less than 64 bytes, we ensure only the relevant bytes are written to the buffer
+		if (remaining < MIN_TRANSFER_SIZE) {
+			// Ensure we only copy the actual remaining bytes to the buffer
+			if (copy_to_user(buffer_ptr, buffer_ptr, remaining)) {
+				dev_err(chan->dev, "Error! copy_to_user failed on the last small transfer\n");
+				ret = -EFAULT;
+				break;
+			}
+		}
+
+		// Update remaining bytes and switch buffers
+		remaining -= transfer_size;
+		buffer_ptr += transfer_size;  // Move buffer pointer forward
+		ping = !ping;  // Switch between ping and pong buffers
+		total_read += ret;
 	}
 
-	return ret;
+    return total_read;
 }
 
 /**
@@ -173,223 +231,6 @@ static const struct file_operations exp_dma_comm_fops = {
 	.write      = exp_dma_write,
 	.open		= exp_dma_open,
 	.release	= exp_dma_release,
-};
-
-/**
- * Function to execute io control codes on pio character device
- */
-static long pio_ioctl(struct file *filp, unsigned int cmd,
-		unsigned long arg) {
-
-	volatile uint32_t translationSize = 0;
-	long err = 0;
-	struct expresso_dma_device *xdev;
-	phys_addr_t 	EGRESS_PHYS;
-	u32         	val;
-	void *kbuf;
-
-	xdev = filp->private_data;
-
-	switch (cmd) {
-
-	case IOCTL_INGRESS_EP_CHECK_TRANSLATION:
-
-		mutex_lock(&xdev->pioCharDevMutex);
-		reinit_completion(&xdev->translationCmpltn);
-		xdev->pDMAEngRegs->SCRATHC0 =
-				EP_TRANSLATION_CHECK;
-		xdev->pDMAEngRegs->AXI_INTR_ASSERT.BIT.SOFTWARE_INTRPT = 1;
-		wait_for_completion_interruptible(&xdev->translationCmpltn);
-		translationSize = xdev->pDMAEngRegs->SCRATHC1;
-		if(translationSize > 0) {
-		    xdev->pioMappedTranslationSize =
-		    		translationSize;
-		}else {
-			err = -EAGAIN;
-		}
-		xdev->pDMAEngRegs->SCRATHC1 = 0;
-		mutex_unlock(&xdev->pioCharDevMutex);
-		break;
-	
-	case IOCTL_EGRESS_EP_CHECK_TRANSLATION :
-		pr_info ("Inside EGRESS IOCTL \n");
-		mutex_lock(&xdev->pioCharDevMutex);
-		reinit_completion(&xdev->translationCmpltn);
-		kbuf = kmalloc(EGRESS_TEST_BUF_SIZE, GFP_KERNEL);
-		if (!kbuf) {
-			dev_err(xdev->dev,
-			"Failed to allocate memory for Egress testing\n");
-			goto errout;
-		}
-		EGRESS_PHYS = (unsigned long)virt_to_phys(kbuf);
-		dev_info(xdev->dev, "Egress buffer allocated => 0x%lx\n",
-			 (unsigned long)virt_to_phys(kbuf));
-		val = lower_32_bits(EGRESS_PHYS);
-		xdev->channels[1].pDMAEngRegs->SCRATHC0 = val;
-		val = upper_32_bits(EGRESS_PHYS);
-		xdev->channels[1].pDMAEngRegs->SCRATHC1 = val;
-		xdev->channels[1].pDMAEngRegs->SCRATHC2 =
-				EGRESS_TEST_BUF_SIZE;
-		xdev->channels[1].pDMAEngRegs->SCRATHC3 =
-				EP_TRANSLATION_CHECK;
-		xdev->channels[1].pDMAEngRegs->AXI_INTR_ASSERT.BIT.SOFTWARE_INTRPT = 1;
-		dev_info(xdev->dev, "Egress buffer received => 0x%llx ",(int *)kbuf);
-		translationSize = xdev->channels[1].pDMAEngRegs->SCRATHC2;
-		if(translationSize > 0) {
-		    xdev->pioMappedTranslationSize =
-		    		translationSize;
-		}else {
-			err = -EAGAIN;
-		}
-		xdev->channels[1].pDMAEngRegs->SCRATHC2 = 0;
-		mutex_unlock(&xdev->pioCharDevMutex);
-
-		mdelay(2000);
-		printk("Post egress transfer buf val[0] = %lx\n", readl(kbuf+0));
-		printk("Post egress transfer buf val[1] = %lx\n", readl(kbuf+4));
-		break;
-	errout:
-		err = -EINVAL;
-	default:
-		err = -EINVAL;
-
-	}
-	return err;
-}
-
-/**
- * Function to initiate read on memory mapped to PCIe BAR
- */
-static ssize_t
-pio_read (struct file *file,
-		char __user * buffer, size_t length, loff_t * f_offset) {
-
-	char *barMemory = NULL;
-	struct expresso_dma_device *xdev;
-	ssize_t numBytes = 0;
-
-	xdev = file->private_data;
-	barMemory = (char *) xdev->BARInfo[PIO_MEMORY_BAR_NUMBER].BAR_VIRT_ADDR;
-
-	if (length > xdev->pioMappedTranslationSize) {
-		dev_err(xdev->dev,
-				"Error! Invalid buffer length supplied at PIO read\n");
-		numBytes = -1;
-		goto err_out_too_long_length;
-	}
-
-	if ((length + *f_offset)
-			> xdev->pioMappedTranslationSize) {
-		dev_err(xdev->dev,
-				"Error! Invalid buffer offset supplied at PIO read\n");
-		numBytes = -1;
-		goto err_out_too_long_length_offset;
-	}
-
-	barMemory += *f_offset;
-
-	numBytes = copy_to_user(buffer, barMemory, length);
-
-	if (numBytes != 0) {
-		dev_err(xdev->dev, "Error! copy_to_user failed at PIO read\n");
-		numBytes = length - numBytes;
-	}else {
-		numBytes = length;
-	}
-
-	err_out_too_long_length_offset:
-	err_out_too_long_length:
-	return numBytes;
-}
-
-/**
- * Function to initiate write on memory mapped to PCIe BAR
- */
-static ssize_t
-pio_write (struct file *file,
-		const char __user * buffer, size_t length, loff_t * f_offset) {
-
-	char *barMemory = NULL;
-	struct expresso_dma_device *xdev;
-	ssize_t numBytes = 0;
-
-	xdev = file->private_data;
-	barMemory = (char *) xdev->BARInfo[PIO_MEMORY_BAR_NUMBER].BAR_VIRT_ADDR;
-
-	if (length > xdev->pioMappedTranslationSize) {
-		dev_err(xdev->dev,
-				"Error! Invalid buffer length supplied at PIO write\n");
-		numBytes = -1;
-		goto err_out_too_long_length;
-	}
-
-	if ((length + *f_offset)
-			> xdev->pioMappedTranslationSize) {
-		dev_err(xdev->dev,
-				"Error! Invalid buffer offset supplied at PIO write\n");
-		numBytes = -1;
-		goto err_out_too_long_length_offset;
-	}
-
-	barMemory += *f_offset;
-
-	numBytes = copy_from_user(barMemory, buffer, length);
-
-	if (numBytes != 0) {
-		dev_err(xdev->dev, "Error! copy_from_user failed at PIO write\n");
-		numBytes = length - numBytes;
-	}else {
-		numBytes = length;
-	}
-
-	err_out_too_long_length_offset:
-	err_out_too_long_length:
-
-	return numBytes;
-}
-
-/**
- * Function to obtain PS PCIe PIO character device file descriptor
- */
-static int pio_open(struct inode * in, struct file * file) {
-
-	struct expresso_dma_device *xdev;
-
-	xdev = container_of(in->i_cdev,
-			struct expresso_dma_device, pioBarMapAccessCharDev);
-
-	file->private_data = xdev;
-
-	dev_dbg(xdev->dev, "PS PCIe PIO character device is opened\n");
-
-	return 0;
-}
-
-/**
- * Function to release PS PCIe PIO character device file descriptor
- */
-static int pio_release(struct inode * in, struct file * filp) {
-
-	struct expresso_dma_device *xdev;
-
-	xdev = container_of(in->i_cdev,
-				struct expresso_dma_device, pioBarMapAccessCharDev);
-
-	dev_dbg(xdev->dev, "PS PCIe PIO character device released\n");
-
-	return 0;
-}
-
-/**
- * File operation supported by PS PCIe PIO character interface
- */
-static const struct file_operations ps_pcie_pio_fops = {
-	.owner		= THIS_MODULE,
-	.read		= pio_read,
-	.write      = pio_write,
-	.unlocked_ioctl = pio_ioctl,
-	.open		= pio_open,
-	.release	= pio_release,
 };
 
 /**
@@ -1181,7 +1022,7 @@ static int expDmaCheckInterruptStatus(expresso_dma_chan_t *chan) {
 
 	int err = -1;
 	uint32_t status;
-
+	uint32_t scratch0_value;
 	BUG_ON(!chan);
 
 	if (chan->state != CHANNEL_AVAILABLE) {
@@ -1201,9 +1042,17 @@ static int expDmaCheckInterruptStatus(expresso_dma_chan_t *chan) {
 	}
 
 	if (status & DMA_INTSTATUS_SWINTR_BIT) {
-		if(chan->pDMAEngRegs->DMA_CHANNEL_STATUS.BIT.CHANNEL_NUMBER == 0) {
-			complete(&chan->xdev->translationCmpltn);
-		}
+		// Read the SCRATCH0 register
+        scratch0_value = chan->pDMAEngRegs->SCRATHC0;
+		printk(KERN_INFO"Received SW interrupt with SC0:%u\n\r",scratch0_value);
+        // Check if SCRATCH0 is even or odd
+        if (scratch0_value % 2 == 0) {
+            //complete(&chan->ping_completion);
+			chan->ping_completion=true;
+        } else {
+            //complete(&chan->pong_completion);
+			chan->pong_completion=true;
+        }
 		/* Clearing Persistent bit */
 		chan->pDMAEngRegs->PCIE_INTR_STATUS.BIT.DMA_SW_INT = 1;
 		err = 0;
@@ -2272,85 +2121,6 @@ err_out_sysfs_create:
 	return err;
 }
 
-/**
- * destroyCharacterInterfaceforBarMappedAccess
- * Unregisters character dev region and dev node for DMA device
- * which was used to do Bar Mapped memory access from user space
- *
- * @xdev: Driver specific data for device
- *
- * Return: void
- */
-static void destroyCharacterInterfaceforBarMappedAccess(
-		struct expresso_dma_device *xdev) {
-
-	BUG_ON(!xdev);
-
-	device_destroy(g_expresso_dma_class,
-			MKDEV(MAJOR(xdev->pioBarMapAccessCharDevice), 0));
-	cdev_del(&xdev->pioBarMapAccessCharDev);
-	unregister_chrdev_region(xdev->pioBarMapAccessCharDevice,1);
-
-	return;
-}
-
-/**
- * createCharacterInterfaceforBarMappedAccess
- * Allocates character dev region and dev node for DMA device
- * to do Bar Mapped memory access from user space
- *
- * @xdev: Driver specific data for device
- * @deviceCount: Board number of current device
- *
- * Return: '0' on success and failure value on error
- */
-static int createCharacterInterfaceforBarMappedAccess(
-		struct expresso_dma_device *xdev, uint32_t deviceCount) {
-
-	int err = 0;
-
-	BUG_ON(!xdev);
-
-	err = alloc_chrdev_region(&xdev->pioBarMapAccessCharDevice, 0, 1,
-			PIO_CHAR_DRIVER_NAME);
-
-	if (err < 0) {
-		dev_err(xdev->dev,
-				"PS PCIe DMA Unable to allocate pio character device region\n");
-		goto err_out_pio_chrdev_region;
-	}
-
-	xdev->pioBarMapAccessCharDev.owner = THIS_MODULE;
-	cdev_init(&xdev->pioBarMapAccessCharDev, &ps_pcie_pio_fops);
-	xdev->pioBarMapAccessCharDev.dev = xdev->pioBarMapAccessCharDevice;
-
-	err = cdev_add(&xdev->pioBarMapAccessCharDev,
-			xdev->pioBarMapAccessCharDevice, 1);
-	if (err < 0) {
-		dev_err(xdev->dev, "PS PCIe DMA unable to add cdev for pio\n");
-		goto err_out_pio_cdev_add;
-	}
-
-	xdev->barMapAccessCharDevice = device_create(g_expresso_dma_class,
-			xdev->dev, MKDEV(MAJOR(xdev->pioBarMapAccessCharDevice), 0), xdev,
-			"%s_%d", PIO_CHAR_DRIVER_NAME, deviceCount);
-
-	if (xdev->barMapAccessCharDevice == NULL) {
-		err = PTR_ERR(xdev->barMapAccessCharDevice);
-		dev_err(xdev->dev, "PS PCIe DMA Unable to create pio device\n");
-		goto err_out_pio_dev_create;
-	}
-
-	return 0;
-
-	err_out_pio_dev_create:
-	cdev_del(&xdev->pioBarMapAccessCharDev);
-	err_out_pio_cdev_add:
-	unregister_chrdev_region(
-			xdev->pioBarMapAccessCharDevice, 1);
-	err_out_pio_chrdev_region:
-	return err;
-}
 
 /**
  * destroyCharacterInterfaceforDmaDevice
@@ -2609,26 +2379,16 @@ static int exp_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent) 
 		goto err_out_create_sysfs_iface;
 	}
 
-	err = createCharacterInterfaceforBarMappedAccess(xdev,deviceCount);
-	if(err) {
-		dev_err(&pdev->dev, "Unable to create Character Driver Interface for pio\n");
-		goto err_out_create_char_iface_pio;
-	}
-
-	mutex_init(&xdev->pioCharDevMutex);
-	xdev->pioMappedTranslationSize = 0;
-	init_completion(&xdev->translationCmpltn);
-
 	for (i = 0; i < MAX_NUMBER_OF_CHANNELS; i++) {
 		xdev->channels[i].state = CHANNEL_AVAILABLE;
+		//init_completion(&xdev->channels[i].ping_completion);
+		//init_completion(&xdev->channels[i].pong_completion);
 	}
 
 	dev_info(&pdev->dev, "PS PCIe DMA driver successfully probed\n");
 
 	return 0;
 
-	err_out_create_char_iface_pio:
-	destroySysfsInterfaceforDmaDevice(xdev);
 	err_out_create_sysfs_iface:
 	destroyCharacterInterfaceforDmaDevice(xdev);
 	err_out_create_char_iface:
@@ -2680,7 +2440,6 @@ static void exp_pci_remove(struct pci_dev *pdev) {
 
 	irq_free(xdev);
 
-	destroyCharacterInterfaceforBarMappedAccess(xdev);
 	destroySysfsInterfaceforDmaDevice(xdev);
 	destroyCharacterInterfaceforDmaDevice(xdev);
 
@@ -2721,7 +2480,8 @@ static void exp_pci_remove(struct pci_dev *pdev) {
 
 static struct pci_device_id exp_pci_tbl[] = { {
 		PCI_DEVICE(PCI_VENDOR_XILINX, ZYNQMP_DMA_DEVID0) },{
-		PCI_DEVICE(PCI_VENDOR_XILINX, ZYNQMP_DMA_DEVID1) }, { } };
+		PCI_DEVICE(PCI_VENDOR_XILINX, ZYNQMP_DMA_DEVID1) },{
+		PCI_DEVICE(PCI_VENDOR_ASTRONICS, BASEBAND)}, { } };
 
 static struct pci_driver expresso_dma_driver = { .name = DRV_MODULE_NAME,
 		.id_table = exp_pci_tbl, .probe = exp_pci_probe, .remove =

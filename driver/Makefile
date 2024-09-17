@@ -1,4 +1,4 @@
-KBUILD_EXTRA_SYMBOLS += $(KDIR)/Module.symvers
+#KBUILD_EXTRA_SYMBOLS += $(KDIR)/Module.symvers
 EXTRA_CFLAGS += -O3 -Os
 
 TARGET = ps_pcie_dma

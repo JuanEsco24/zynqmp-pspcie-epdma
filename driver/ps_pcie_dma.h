@@ -46,11 +46,13 @@
 #define ZYNQMP_DMA_DEVID0 (0xA024)
 #define ZYNQMP_DMA_DEVID1 (0xA808)
 
+#define PCI_VENDOR_ASTRONICS (0x1BD0)
+#define BASEBAND (0xBA5E)
+
+
 #define MAX_BARS 6
 
 #define DMA_BAR_NUMBER 0
-
-#define PIO_MEMORY_BAR_NUMBER            2
 
 #define WORKQ_NAME_SIZE       100
 #define INTR_HANDLR_NAME_SIZE 100
@@ -494,6 +496,10 @@ typedef struct _expresso_dma_chan {
 
 	struct completion srcQWorkCompletion;
 	struct completion dstQWorkCompletion;
+	//struct completion ping_completion;
+	//struct completion pong_completion;
+	bool ping_completion;
+	bool pong_completion;
 } expresso_dma_chan_t;
 
 typedef struct _xlnx_exp_dma_synchronous_transaction {
@@ -575,9 +581,6 @@ typedef struct _EXP_DMA_DEVICES {
  * @charDevice: Character Device for DMA transfers
  * @expressoDMACharDev: Character device id to support DMA transfers
  * @chardev: Array of device nodes supported by character driver for channel specific DMA transfers
- * @pioBarMapAccessCharDevice: Character Device for Bar mapped memory access
- * @pioBarMapAccessCharDev: Character Device id for BAR mapped memory access
- * @pioBarMapAccessCharDevice: Device node supported by Bar mapped memory access
  */
 struct expresso_dma_device {
 
@@ -601,13 +604,7 @@ struct expresso_dma_device {
 	struct cdev expressoDMACharDev;
 	struct device *chardev[MAX_NUMBER_OF_CHAR_DEVICES];
 
-	dev_t pioBarMapAccessCharDevice;
-	struct cdev pioBarMapAccessCharDev;
-	struct device *barMapAccessCharDevice;
 	
-	struct   mutex    pioCharDevMutex;
-	struct   completion translationCmpltn;
-	uint32_t pioMappedTranslationSize;
 };
 
 static irqreturn_t exp_dma_dev_intr_handler(int irq, void *data);
