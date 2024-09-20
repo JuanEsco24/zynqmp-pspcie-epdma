@@ -115,24 +115,24 @@ exp_dma_read (struct file *file,
 
 		// Set the corresponding int flag to false (ping or pong)
 		if (ping) {
-			//reinit_completion(&chan->ping_completion);
-			chan->ping_completion=false;
+			reinit_completion(&chan->ping_completion);
+			//chan->ping_completion=false;
 			dma_offset = RX_PING_BUFFER_ADDR;
 		} else {
-			//reinit_completion(&chan->pong_completion);
-			chan->pong_completion=false;
+			reinit_completion(&chan->pong_completion);
+			//chan->pong_completion=false;
 			dma_offset = RX_PONG_BUFFER_ADDR;
 		}
 
 		// Wait for ISR to signal that the buffer is ready
 		if (ping) {
 			// Wait for completion
-			while(!chan->ping_completion){cpu_relax();}
-			//wait_for_completion_interruptible(&chan->ping_completion);
+			//while(!chan->ping_completion){cpu_relax();}
+		    wait_for_completion_interruptible(&chan->ping_completion);
 		} else {
 			// Wait for completion
-			while(!chan->pong_completion){cpu_relax();}
-			//wait_for_completion_interruptible(&chan->pong_completion);
+			//while(!chan->pong_completion){cpu_relax();}
+			wait_for_completion_interruptible(&chan->pong_completion);
 		}
 
 		// Perform the transfer with the current buffer (ping or pong)
@@ -193,24 +193,24 @@ exp_dma_write (struct file *file,
 	while (remaining > 0) {
 		// Set the corresponding int flag to false (ping or pong)
 		if (ping) {
-			//reinit_completion(&chan->ping_completion);
-			chan->ping_completion=false;
+			reinit_completion(&chan->ping_completion);
+			//chan->ping_completion=false;
 			dma_offset = TX_PING_BUFFER_ADDR;
 		} else {
-			//reinit_completion(&chan->pong_completion);
-			chan->pong_completion=false;
+			reinit_completion(&chan->pong_completion);
+			//chan->pong_completion=false;
 			dma_offset = TX_PONG_BUFFER_ADDR;
 		}
 
 		// Wait for ISR to signal that the buffer is ready
 		if (ping) {
 			// Wait for completion
-			while(!chan->ping_completion){cpu_relax();}
-			//wait_for_completion_interruptible(&chan->ping_completion);
+			//while(!chan->ping_completion){cpu_relax();}
+			wait_for_completion_interruptible(&chan->ping_completion);
 		} else {
 			// Wait for completion
-			while(!chan->pong_completion){cpu_relax();}
-			//wait_for_completion_interruptible(&chan->pong_completion);
+			//while(!chan->pong_completion){cpu_relax();}
+			wait_for_completion_interruptible(&chan->pong_completion);
 		}
 
 		// Perform the transfer with the current buffer (ping or pong)
@@ -1091,11 +1091,11 @@ static int expDmaCheckInterruptStatus(expresso_dma_chan_t *chan) {
 		//printk(KERN_INFO"Received SW interrupt with SC0:%u\n\r",scratch0_value);
         // Check if SCRATCH0 is even or odd
         if (scratch0_value % 2 == 0) {
-            //complete(&chan->ping_completion);
-			chan->ping_completion=true;
+            complete(&chan->ping_completion);
+			//chan->ping_completion=true;
         } else {
-            //complete(&chan->pong_completion);
-			chan->pong_completion=true;
+            complete(&chan->pong_completion);
+			//chan->pong_completion=true;
         }
 		/* Clearing Persistent bit */
 		chan->pDMAEngRegs->PCIE_INTR_STATUS.BIT.DMA_SW_INT = 1;
@@ -2425,8 +2425,8 @@ static int exp_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent) 
 
 	for (i = 0; i < MAX_NUMBER_OF_CHANNELS; i++) {
 		xdev->channels[i].state = CHANNEL_AVAILABLE;
-		//init_completion(&xdev->channels[i].ping_completion);
-		//init_completion(&xdev->channels[i].pong_completion);
+		init_completion(&xdev->channels[i].ping_completion);
+		init_completion(&xdev->channels[i].pong_completion);
 	}
 
 	dev_info(&pdev->dev, "PS PCIe DMA driver successfully probed\n");

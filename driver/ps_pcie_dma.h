@@ -496,10 +496,10 @@ typedef struct _expresso_dma_chan {
 
 	struct completion srcQWorkCompletion;
 	struct completion dstQWorkCompletion;
-	//struct completion ping_completion;
-	//struct completion pong_completion;
-	bool ping_completion;
-	bool pong_completion;
+	struct completion ping_completion;
+	struct completion pong_completion;
+	//bool ping_completion;
+	//bool pong_completion;
 } expresso_dma_chan_t;
 
 typedef struct _xlnx_exp_dma_synchronous_transaction {
