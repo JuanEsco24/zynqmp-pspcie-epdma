@@ -39,6 +39,7 @@
 #include <linux/msi.h>
 #include <linux/pagemap.h>
 #include <linux/dma-mapping.h>
+#include <linux/jiffies.h>
 
 #include "../common/common_include.h"
 
