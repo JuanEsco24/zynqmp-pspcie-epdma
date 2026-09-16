@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Barcode Beep Detector</string>
+    <string name="status_searching">Point camera at any QR code or barcode</string>
+    <string name="status_detected">Code detected</string>
+    <string name="camera_permission_required">Camera permission is required</string>
+</resources>
